@@ -25,10 +25,11 @@
 - [ ] Error handling UX is correct
 - [ ] Regression checks completed
 
-## Reviewer Assignment
-- **Coder:** Linus
-- **Reviewer:** Leon
-- **Tester:** Helen
+## Virtual Ownership (Label-based)
+- **Coder:** Linus (`role:coder-linus`)
+- **Reviewer:** Leon (`role:reviewer-leon`)
+- **Tester:** Helen (`role:tester-helen`)
+- **Status label:** `status:in-review` while PR is open
 
 ## Reviewer Checklist
 - [ ] Linked issue is correct and complete

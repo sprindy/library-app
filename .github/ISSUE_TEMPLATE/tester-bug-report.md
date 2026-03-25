@@ -39,10 +39,12 @@
 - [ ] No regression in adjacent flows
 - [ ] Build/test gates pass
 
-## Ownership
-- **Coder (Assignee):** Linus
-- **Reviewer:** Leon
-- **Tester:** Helen
+## Virtual Ownership (Label-based)
+- **Coder:** Linus (`role:coder-linus`)
+- **Reviewer:** Leon (`role:reviewer-leon`)
+- **Tester:** Helen (`role:tester-helen`)
 
-## Labels
-`bug`, `source:tester`, `severity:Sx`
+## Required Labels
+- Base: `bug`, `source:tester`, `severity:Sx`
+- Role: `role:coder-linus`, `role:reviewer-leon`, `role:tester-helen`
+- Status (pick one): `status:triage` → `status:in-dev` → `status:in-review` → `status:qa` → `status:done`
