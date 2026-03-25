@@ -18,7 +18,7 @@ struct BookFormView: View {
     @State private var formData = BookFormData()
     @State private var validationMessage: String?
 
-    let onSave: (BookFormData) -> Void
+    let onSave: (BookFormData) -> Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -82,7 +82,10 @@ struct BookFormView: View {
         validationMessage = nil
         formData.title = title
         formData.author = author
-        onSave(formData)
-        dismiss()
+
+        let didSave = onSave(formData)
+        if didSave {
+            dismiss()
+        }
     }
 }

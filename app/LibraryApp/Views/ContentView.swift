@@ -155,7 +155,7 @@ struct ContentView: View {
         return "No books matched your current search."
     }
 
-    private func addBook(_ formData: BookFormData) {
+    private func addBook(_ formData: BookFormData) -> Bool {
         let book = Book(
             title: formData.title,
             author: formData.author,
@@ -164,8 +164,14 @@ struct ContentView: View {
         )
 
         modelContext.insert(book)
-        persistChanges(errorContext: "Failed to save the new book.")
-        selectedBookID = book.id
+        let didSave = persistChanges(errorContext: "Failed to save the new book.")
+        if didSave {
+            selectedBookID = book.id
+        } else {
+            modelContext.delete(book)
+        }
+
+        return didSave
     }
 
     private func updateStatus(book: Book, status: BookStatus) {
@@ -200,11 +206,13 @@ struct ContentView: View {
         }
     }
 
-    private func persistChanges(errorContext: String) {
+    private func persistChanges(errorContext: String) -> Bool {
         do {
             try modelContext.save()
+            return true
         } catch {
             showAlert(title: "Save Error", message: "\(errorContext)\n\n\(error.localizedDescription)")
+            return false
         }
     }
 
