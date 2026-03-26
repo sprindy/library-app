@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   issue-routing:
-    if: github.event_name == 'issues'
+    if: github.event_name == 'issues' && (github.event.action == 'opened' || github.event.action == 'reopened')
     runs-on: ubuntu-latest
     steps:
       - name: Route Helen-reported bugs to Linus
@@ -59,16 +59,25 @@ jobs:
               assignees: ['CoderLinus']
             }).catch(() => core.info('Assignee add skipped (permission/collab mismatch).'));
 
-            await github.rest.issues.createComment({
+            const routingMarker = 'AUTO_ROUTED_LINUS';
+            const existingComments = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: issue.number,
-              body: '🤖 Auto-routing: assigned to @CoderLinus. Reviewer will be @LeonReviewer, tester will be @TesterHelen.'
+              per_page: 100
             });
+            if (!existingComments.data.some(c => (c.body || '').includes(routingMarker))) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: '🤖 AUTO_ROUTED_LINUS: assigned to @CoderLinus. Reviewer will be @LeonReviewer, tester will be @TesterHelen.'
+              });
+            }
 
 
   linus-kickoff:
-    if: github.event_name == 'issues'
+    if: github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'status:triage'
     runs-on: ubuntu-latest
     steps:
       - name: Auto-start Linus on triaged tester issues
