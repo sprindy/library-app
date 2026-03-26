@@ -3,18 +3,36 @@ name: team-task-chain-automation
 on:
   issues:
     types: [opened, reopened, labeled, assigned]
-  pull_request_target:
-    types: [opened, reopened, ready_for_review, synchronize, closed]
-  pull_request_review:
-    types: [submitted]
 
 permissions:
-  contents: write
   issues: write
-  pull-requests: write
 
 jobs:
-  sanity:
+  issue-routing:
+    if: github.event_name == 'issues' && (github.event.action == 'opened' || github.event.action == 'reopened')
     runs-on: ubuntu-latest
     steps:
-      - run: echo "workflow loaded"
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const labels = new Set((issue.labels || []).map(l => l.name));
+            const isTesterSource = labels.has('source:tester') || issue.user?.login === 'TesterHelen';
+            if (!isTesterSource) return;
+
+            ['status:triage','status:in-dev','status:in-review','status:qa','status:done'].forEach(l => labels.delete(l));
+            ['bug','source:tester','role:coder-linus','role:reviewer-leon','role:tester-helen','status:triage'].forEach(l => labels.add(l));
+
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              labels: [...labels]
+            });
+
+            await github.rest.issues.addAssignees({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              assignees: ['CoderLinus']
+            }).catch(() => {});
