@@ -46,10 +46,7 @@ jobs:
             }).catch(() => {});
 
   linus-autostart-draft-pr:
-    if: github.event_name == 'issues' && (
-          (github.event.action == 'assigned' && github.event.assignee.login == 'CoderLinus') ||
-          (github.event.action == 'labeled' && github.event.label.name == 'status:triage')
-        )
+    if: github.event_name == 'issues' && ((github.event.action == 'assigned' && github.event.assignee.login == 'CoderLinus') || (github.event.action == 'labeled' && github.event.label.name == 'status:triage'))
     runs-on: ubuntu-latest
     steps:
       - id: gate
@@ -92,7 +89,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: issue.number,
-              body: '🤖 AUTO_KICKOFF_LINUS\n@CoderLinus start implementation. Draft PR will be auto-created if `CODERLINUS_PAT` is configured.'
+              body: `🤖 AUTO_KICKOFF_LINUS\n@CoderLinus start implementation. Draft PR will be auto-created if \`CODERLINUS_PAT\` is configured.`
             });
 
       - if: steps.gate.outputs.run == 'true' && secrets.CODERLINUS_PAT != ''
