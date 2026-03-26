@@ -5,9 +5,9 @@
 This repo uses a **real-author workflow** so PRs and commits show the correct contributor identity on GitHub.
 
 Contributors:
-- Linus
-- Leon
-- Helen
+- Linus <coder.linus@protonmail.com> (GitHub: @CoderLinus)
+- Leon <leon.reviewer@protonmail.com> (GitHub: @LeonReviewer)
+- Helen <tester.helen@protonmail.com> (GitHub: @TesterHelen)
 
 ---
 
@@ -18,14 +18,14 @@ Each teammate should set their own git identity (global or per-repo).
 ### Option A: Global (all repos)
 ```bash
 git config --global user.name "Linus"
-git config --global user.email "LINUS_GITHUB_NOREPLY_EMAIL"
+git config --global user.email "coder.linus@protonmail.com"
 ```
 
 ### Option B: Per-repo (recommended if sharing one machine)
 ```bash
 cd /path/to/library-app
 git config user.name "Linus"
-git config user.email "LINUS_GITHUB_NOREPLY_EMAIL"
+git config user.email "coder.linus@protonmail.com"
 ```
 
 Repeat for each person:
@@ -33,11 +33,11 @@ Repeat for each person:
 ```bash
 # Leon
 git config user.name "Leon"
-git config user.email "LEON_GITHUB_NOREPLY_EMAIL"
+git config user.email "leon.reviewer@protonmail.com"
 
 # Helen
 git config user.name "Helen"
-git config user.email "HELEN_GITHUB_NOREPLY_EMAIL"
+git config user.email "tester.helen@protonmail.com"
 ```
 
 Verify:
@@ -129,17 +129,17 @@ gh pr create \
 If one person commits code authored by multiple teammates, add co-author trailers:
 
 ```text
-Co-authored-by: Linus <LINUS_GITHUB_NOREPLY_EMAIL>
-Co-authored-by: Leon <LEON_GITHUB_NOREPLY_EMAIL>
-Co-authored-by: Helen <HELEN_GITHUB_NOREPLY_EMAIL>
+Co-authored-by: Linus <coder.linus@protonmail.com>
+Co-authored-by: Leon <leon.reviewer@protonmail.com>
+Co-authored-by: Helen <tester.helen@protonmail.com>
 ```
 
 Example:
 ```bash
 git commit -m "feat: implement save retry UX
 
-Co-authored-by: Linus <LINUS_GITHUB_NOREPLY_EMAIL>
-Co-authored-by: Helen <HELEN_GITHUB_NOREPLY_EMAIL>"
+Co-authored-by: Linus <coder.linus@protonmail.com>
+Co-authored-by: Helen <tester.helen@protonmail.com>"
 ```
 
 This preserves visible contribution credit even if committer differs.
@@ -153,17 +153,17 @@ If multiple teammates use one machine, run one of these before committing:
 ```bash
 # Linus
 git config user.name "Linus"
-git config user.email "LINUS_GITHUB_NOREPLY_EMAIL"
+git config user.email "coder.linus@protonmail.com"
 gh auth status
 
 # Leon
 git config user.name "Leon"
-git config user.email "LEON_GITHUB_NOREPLY_EMAIL"
+git config user.email "leon.reviewer@protonmail.com"
 gh auth status
 
 # Helen
 git config user.name "Helen"
-git config user.email "HELEN_GITHUB_NOREPLY_EMAIL"
+git config user.email "tester.helen@protonmail.com"
 gh auth status
 ```
 

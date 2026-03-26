@@ -2,6 +2,11 @@
 
 This runbook is the exact sequence to run your 3-agent test with minimal drift.
 
+## Team Identities (GitHub)
+- Linus (Coder): `coder.linus@protonmail.com` / `@CoderLinus`
+- Leon (Reviewer): `leon.reviewer@protonmail.com` / `@LeonReviewer`
+- Helen (Tester): `tester.helen@protonmail.com` / `@TesterHelen`
+
 ## Paths
 - Pack root: `/Users/sprindy/.openclaw/workspace/agent-packs/library-app`
 - Spec: `/Users/sprindy/.openclaw/workspace/agent-packs/library-app/SPEC.md`

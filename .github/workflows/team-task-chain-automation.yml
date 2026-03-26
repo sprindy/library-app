@@ -1,0 +1,174 @@
+name: team-task-chain-automation
+
+on:
+  issues:
+    types: [opened, reopened, labeled]
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, synchronize, labeled, closed]
+  pull_request_review:
+    types: [submitted]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  issue-routing:
+    if: github.event_name == 'issues'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Route Helen-reported bugs to Linus
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const labels = new Set((issue.labels || []).map(l => l.name));
+
+            const isTesterSource = labels.has('source:tester') || issue.user?.login === 'TesterHelen';
+            if (!isTesterSource) {
+              core.info('Not a tester-reported issue. Skipping routing.');
+              return;
+            }
+
+            const desiredLabels = [
+              'bug',
+              'source:tester',
+              'role:coder-linus',
+              'role:reviewer-leon',
+              'role:tester-helen',
+              'status:triage'
+            ];
+
+            const statusLabels = ['status:triage', 'status:in-dev', 'status:in-review', 'status:qa', 'status:done'];
+            const next = new Set(labels);
+            for (const l of statusLabels) next.delete(l);
+            desiredLabels.forEach(l => next.add(l));
+
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              labels: [...next]
+            });
+
+            await github.rest.issues.addAssignees({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              assignees: ['CoderLinus']
+            }).catch(() => core.info('Assignee add skipped (permission/collab mismatch).'));
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              body: '🤖 Auto-routing: assigned to @CoderLinus. Reviewer will be @LeonReviewer, tester will be @TesterHelen.'
+            });
+
+  pr-routing:
+    if: github.event_name == 'pull_request_target' && github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Apply role/status labels and request reviewers
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const issue_number = pr.number;
+
+            const current = await github.rest.issues.listLabelsOnIssue({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number
+            });
+
+            const labels = new Set(current.data.map(l => l.name));
+            const statusLabels = ['status:triage', 'status:in-dev', 'status:in-review', 'status:qa', 'status:done'];
+            for (const l of statusLabels) labels.delete(l);
+
+            ['role:reviewer-leon', 'role:tester-helen', 'status:in-review'].forEach(l => labels.add(l));
+
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number,
+              labels: [...labels]
+            });
+
+            const reviewerCandidates = ['LeonReviewer', 'TesterHelen'];
+            const reviewers = reviewerCandidates.filter(r => r.toLowerCase() !== (pr.user?.login || '').toLowerCase());
+
+            if (reviewers.length) {
+              await github.rest.pulls.requestReviewers({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number,
+                reviewers
+              }).catch((e) => core.info(`requestReviewers skipped: ${e.message}`));
+            }
+
+  review-status-sync:
+    if: github.event_name == 'pull_request_review'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sync PR labels from review state
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const review = context.payload.review;
+            const pr = context.payload.pull_request;
+            const reviewer = (review.user?.login || '').toLowerCase();
+            const state = (review.state || '').toUpperCase();
+
+            const current = await github.rest.issues.listLabelsOnIssue({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number
+            });
+            const labels = new Set(current.data.map(l => l.name));
+
+            const clearStatuses = () => {
+              ['status:triage', 'status:in-dev', 'status:in-review', 'status:qa', 'status:done'].forEach(l => labels.delete(l));
+            };
+
+            if (state === 'CHANGES_REQUESTED') {
+              clearStatuses();
+              labels.add('status:in-dev');
+            } else if (state === 'APPROVED' && reviewer === 'leonreviewer') {
+              clearStatuses();
+              labels.add('status:qa');
+            }
+
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              labels: [...labels]
+            });
+
+  pr-close-sync:
+    if: github.event_name == 'pull_request_target' && github.event.action == 'closed' && github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mark merged PR as done
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+
+            const current = await github.rest.issues.listLabelsOnIssue({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number
+            });
+            const labels = new Set(current.data.map(l => l.name));
+            ['status:triage', 'status:in-dev', 'status:in-review', 'status:qa'].forEach(l => labels.delete(l));
+            labels.add('status:done');
+
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              labels: [...labels]
+            });
