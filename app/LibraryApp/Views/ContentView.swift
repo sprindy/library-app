@@ -136,6 +136,11 @@ struct ContentView: View {
                 .textFieldStyle(.roundedBorder)
                 .focused($searchIsFocused)
 
+            Button("Search") {
+                performSearchAction()
+            }
+            .keyboardShortcut(.return, modifiers: .command)
+
             Button("Add") {
                 showingAddBookSheet = true
             }
@@ -215,6 +220,7 @@ struct ContentView: View {
             return false
         }
     }
+
 
     private func exportCSV() {
         let panel = NSSavePanel()
