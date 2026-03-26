@@ -2,14 +2,14 @@ name: team-task-chain-automation
 
 on:
   issues:
-    types: [opened, reopened, labeled]
+    types: [opened, reopened, labeled, assigned]
   pull_request_target:
-    types: [opened, reopened, ready_for_review, synchronize, labeled, closed]
+    types: [opened, reopened, ready_for_review, synchronize, labeled, review_requested, closed]
   pull_request_review:
     types: [submitted]
 
 permissions:
-  contents: read
+  contents: write
   issues: write
   pull-requests: write
 
@@ -26,17 +26,11 @@ jobs:
             const labels = new Set((issue.labels || []).map(l => l.name));
 
             const isTesterSource = labels.has('source:tester') || issue.user?.login === 'TesterHelen';
-            if (!isTesterSource) {
-              core.info('Not a tester-reported issue. Skipping routing.');
-              return;
-            }
+            if (!isTesterSource) return;
 
             const desiredLabels = [
-              'bug',
-              'source:tester',
-              'role:coder-linus',
-              'role:reviewer-leon',
-              'role:tester-helen',
+              'bug', 'source:tester',
+              'role:coder-linus', 'role:reviewer-leon', 'role:tester-helen',
               'status:triage'
             ];
 
@@ -57,39 +51,25 @@ jobs:
               repo: context.repo.repo,
               issue_number: issue.number,
               assignees: ['CoderLinus']
-            }).catch(() => core.info('Assignee add skipped (permission/collab mismatch).'));
+            }).catch(() => {});
 
-            const routingMarker = 'AUTO_ROUTED_LINUS';
-            const existingComments = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: issue.number,
-              per_page: 100
-            });
-            if (!existingComments.data.some(c => (c.body || '').includes(routingMarker))) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: issue.number,
-                body: '🤖 AUTO_ROUTED_LINUS: assigned to @CoderLinus. Reviewer will be @LeonReviewer, tester will be @TesterHelen.'
-              });
-            }
-
-
-  linus-kickoff:
-    if: github.event_name == 'issues' && github.event.action == 'labeled' && github.event.label.name == 'status:triage'
+  linus-autostart-pr:
+    if: github.event_name == 'issues' && (
+          (github.event.action == 'assigned' && github.event.assignee.login == 'CoderLinus') ||
+          (github.event.action == 'labeled' && github.event.label.name == 'status:triage')
+        )
     runs-on: ubuntu-latest
     steps:
-      - name: Auto-start Linus on triaged tester issues
+      - name: Check issue state and avoid duplicate kickoff
+        id: gate
         uses: actions/github-script@v7
         with:
           script: |
             const issue = context.payload.issue;
             const labels = new Set((issue.labels || []).map(l => l.name));
-
-            const shouldKickoff = labels.has('role:coder-linus') && labels.has('status:triage');
-            if (!shouldKickoff) {
-              core.info('Kickoff conditions not met.');
+            const ok = labels.has('role:coder-linus') && labels.has('status:triage');
+            if (!ok) {
+              core.setOutput('run', 'false');
               return;
             }
 
@@ -99,22 +79,24 @@ jobs:
               issue_number: issue.number,
               per_page: 100
             });
+            const exists = comments.data.some(c => (c.body || '').includes('AUTO_KICKOFF_LINUS'));
+            core.setOutput('run', exists ? 'false' : 'true');
 
-            const marker = 'AUTO_KICKOFF_LINUS';
-            if (comments.data.some(c => (c.body || '').includes(marker))) {
-              core.info('Kickoff already posted.');
-              return;
-            }
-
-            const next = new Set(labels);
-            ['status:triage', 'status:qa', 'status:in-review', 'status:done'].forEach(l => next.delete(l));
-            next.add('status:in-dev');
+      - name: Move status to in-dev and post kickoff
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const labels = new Set((issue.labels || []).map(l => l.name));
+            ['status:triage','status:qa','status:in-review','status:done'].forEach(l => labels.delete(l));
+            labels.add('status:in-dev');
 
             await github.rest.issues.update({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: issue.number,
-              labels: [...next]
+              labels: [...labels]
             });
 
             await github.rest.issues.createComment({
@@ -123,15 +105,83 @@ jobs:
               issue_number: issue.number,
               body: [
                 '🤖 AUTO_KICKOFF_LINUS',
-                '',
-                '@CoderLinus start implementation for this issue now.',
-                'When work starts, open a fix branch and submit a PR that includes `Closes #' + issue.number + '`.',
-                'Reviewer: @LeonReviewer',
-                'Tester: @TesterHelen',
-                '',
-                'Status moved automatically: `status:triage` → `status:in-dev`.'
-              ].join('
-')
+                '@CoderLinus start implementation now.',
+                'Automation will open a draft PR scaffold if credentials are configured.',
+                'Required reviewers: @LeonReviewer @TesterHelen'
+              ].join('\n')
+            });
+
+      - name: Checkout repository
+        if: steps.gate.outputs.run == 'true' && secrets.CODERLINUS_PAT != ''
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.CODERLINUS_PAT }}
+
+      - name: Create Linus branch + draft PR scaffold
+        if: steps.gate.outputs.run == 'true' && secrets.CODERLINUS_PAT != ''
+        env:
+          GH_TOKEN: ${{ secrets.CODERLINUS_PAT }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          ISSUE_TITLE=$(gh issue view "$ISSUE_NUMBER" --json title --jq .title)
+          BRANCH="fix/issue-${ISSUE_NUMBER}-autostart"
+
+          git config user.name "CoderLinus"
+          git config user.email "coder.linus@protonmail.com"
+
+          git fetch origin main
+          git checkout -B "$BRANCH" origin/main
+
+          mkdir -p .github/autostart
+          cat > .github/autostart/issue-${ISSUE_NUMBER}.md <<EOF
+          # Auto-start scaffold for issue #${ISSUE_NUMBER}
+          Title: ${ISSUE_TITLE}
+
+          This scaffold was generated automatically to start Linus' execution flow.
+          Replace with real implementation commits.
+          EOF
+
+          git add .github/autostart/issue-${ISSUE_NUMBER}.md
+          git commit -m "chore(autostart): scaffold for issue #${ISSUE_NUMBER}" || true
+          git push -u origin "$BRANCH" || true
+
+          # Create PR if not exists
+          EXISTING=$(gh pr list --search "head:${BRANCH}" --json number --jq 'length')
+          if [ "$EXISTING" = "0" ]; then
+            gh pr create \
+              --base main \
+              --head "$BRANCH" \
+              --title "wip: issue #${ISSUE_NUMBER} implementation kickoff" \
+              --body "Auto-start PR scaffold for #${ISSUE_NUMBER}.\n\nCloses #${ISSUE_NUMBER}\n\n- [ ] Linus: implement fix\n- [ ] Leon: review\n- [ ] Helen: QA" \
+              --draft
+          fi
+
+      - name: Label PR + request reviewers (autostart branch)
+        if: steps.gate.outputs.run == 'true' && secrets.CODERLINUS_PAT != ''
+        env:
+          GH_TOKEN: ${{ secrets.CODERLINUS_PAT }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          BRANCH="fix/issue-${ISSUE_NUMBER}-autostart"
+          PR_NUMBER=$(gh pr list --search "head:${BRANCH}" --json number --jq '.[0].number')
+          [ -z "$PR_NUMBER" ] && exit 0
+          gh pr edit "$PR_NUMBER" --add-label role:reviewer-leon --add-label role:tester-helen --add-label status:in-review || true
+          gh pr edit "$PR_NUMBER" --remove-label status:triage --remove-label status:in-dev || true
+          gh pr edit "$PR_NUMBER" --add-reviewer LeonReviewer --add-reviewer TesterHelen || true
+
+      - name: Missing PAT warning
+        if: steps.gate.outputs.run == 'true' && secrets.CODERLINUS_PAT == ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              body: '⚠️ `CODERLINUS_PAT` secret is missing. I moved status to `in-dev` but cannot auto-create branch/PR as @CoderLinus yet.'
             });
 
   pr-routing:
@@ -154,7 +204,6 @@ jobs:
             const labels = new Set(current.data.map(l => l.name));
             const statusLabels = ['status:triage', 'status:in-dev', 'status:in-review', 'status:qa', 'status:done'];
             for (const l of statusLabels) labels.delete(l);
-
             ['role:reviewer-leon', 'role:tester-helen', 'status:in-review'].forEach(l => labels.add(l));
 
             await github.rest.issues.update({
@@ -166,14 +215,13 @@ jobs:
 
             const reviewerCandidates = ['LeonReviewer', 'TesterHelen'];
             const reviewers = reviewerCandidates.filter(r => r.toLowerCase() !== (pr.user?.login || '').toLowerCase());
-
             if (reviewers.length) {
               await github.rest.pulls.requestReviewers({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 pull_number: pr.number,
                 reviewers
-              }).catch((e) => core.info(`requestReviewers skipped: ${e.message}`));
+              }).catch(() => {});
             }
 
   review-status-sync:
@@ -196,9 +244,7 @@ jobs:
             });
             const labels = new Set(current.data.map(l => l.name));
 
-            const clearStatuses = () => {
-              ['status:triage', 'status:in-dev', 'status:in-review', 'status:qa', 'status:done'].forEach(l => labels.delete(l));
-            };
+            const clearStatuses = () => ['status:triage','status:in-dev','status:in-review','status:qa','status:done'].forEach(l => labels.delete(l));
 
             if (state === 'CHANGES_REQUESTED') {
               clearStatuses();
@@ -224,16 +270,14 @@ jobs:
         with:
           script: |
             const pr = context.payload.pull_request;
-
             const current = await github.rest.issues.listLabelsOnIssue({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: pr.number
             });
             const labels = new Set(current.data.map(l => l.name));
-            ['status:triage', 'status:in-dev', 'status:in-review', 'status:qa'].forEach(l => labels.delete(l));
+            ['status:triage','status:in-dev','status:in-review','status:qa'].forEach(l => labels.delete(l));
             labels.add('status:done');
-
             await github.rest.issues.update({
               owner: context.repo.owner,
               repo: context.repo.repo,
