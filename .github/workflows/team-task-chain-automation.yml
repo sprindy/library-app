@@ -4,7 +4,7 @@ on:
   issues:
     types: [opened, reopened, labeled, assigned]
   pull_request_target:
-    types: [opened, reopened, ready_for_review, synchronize, labeled, review_requested, closed]
+    types: [opened, reopened, ready_for_review, synchronize, labeled, closed]
   pull_request_review:
     types: [submitted]
 
@@ -18,26 +18,18 @@ jobs:
     if: github.event_name == 'issues' && (github.event.action == 'opened' || github.event.action == 'reopened')
     runs-on: ubuntu-latest
     steps:
-      - name: Route Helen-reported bugs to Linus
-        uses: actions/github-script@v7
+      - uses: actions/github-script@v7
         with:
           script: |
             const issue = context.payload.issue;
             const labels = new Set((issue.labels || []).map(l => l.name));
-
             const isTesterSource = labels.has('source:tester') || issue.user?.login === 'TesterHelen';
             if (!isTesterSource) return;
 
-            const desiredLabels = [
-              'bug', 'source:tester',
-              'role:coder-linus', 'role:reviewer-leon', 'role:tester-helen',
-              'status:triage'
-            ];
-
-            const statusLabels = ['status:triage', 'status:in-dev', 'status:in-review', 'status:qa', 'status:done'];
+            const statusLabels = ['status:triage','status:in-dev','status:in-review','status:qa','status:done'];
             const next = new Set(labels);
             for (const l of statusLabels) next.delete(l);
-            desiredLabels.forEach(l => next.add(l));
+            ['bug','source:tester','role:coder-linus','role:reviewer-leon','role:tester-helen','status:triage'].forEach(l => next.add(l));
 
             await github.rest.issues.update({
               owner: context.repo.owner,
@@ -53,15 +45,14 @@ jobs:
               assignees: ['CoderLinus']
             }).catch(() => {});
 
-  linus-autostart-pr:
+  linus-autostart-draft-pr:
     if: github.event_name == 'issues' && (
           (github.event.action == 'assigned' && github.event.assignee.login == 'CoderLinus') ||
           (github.event.action == 'labeled' && github.event.label.name == 'status:triage')
         )
     runs-on: ubuntu-latest
     steps:
-      - name: Check issue state and avoid duplicate kickoff
-        id: gate
+      - id: gate
         uses: actions/github-script@v7
         with:
           script: |
@@ -72,7 +63,6 @@ jobs:
               core.setOutput('run', 'false');
               return;
             }
-
             const comments = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -82,8 +72,7 @@ jobs:
             const exists = comments.data.some(c => (c.body || '').includes('AUTO_KICKOFF_LINUS'));
             core.setOutput('run', exists ? 'false' : 'true');
 
-      - name: Move status to in-dev and post kickoff
-        if: steps.gate.outputs.run == 'true'
+      - if: steps.gate.outputs.run == 'true'
         uses: actions/github-script@v7
         with:
           script: |
@@ -103,118 +92,80 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: issue.number,
-              body: [
-                '🤖 AUTO_KICKOFF_LINUS',
-                '@CoderLinus start implementation now.',
-                'Automation will open a draft PR scaffold if credentials are configured.',
-                'Required reviewers: @LeonReviewer @TesterHelen'
-              ].join('\n')
+              body: '🤖 AUTO_KICKOFF_LINUS\n@CoderLinus start implementation. Draft PR will be auto-created if `CODERLINUS_PAT` is configured.'
             });
 
-      - name: Checkout repository
-        if: steps.gate.outputs.run == 'true' && secrets.CODERLINUS_PAT != ''
+      - if: steps.gate.outputs.run == 'true' && secrets.CODERLINUS_PAT != ''
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.CODERLINUS_PAT }}
 
-      - name: Create Linus branch + draft PR scaffold
-        if: steps.gate.outputs.run == 'true' && secrets.CODERLINUS_PAT != ''
+      - if: steps.gate.outputs.run == 'true' && secrets.CODERLINUS_PAT != ''
         env:
           GH_TOKEN: ${{ secrets.CODERLINUS_PAT }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
           set -euo pipefail
-          ISSUE_TITLE=$(gh issue view "$ISSUE_NUMBER" --json title --jq .title)
           BRANCH="fix/issue-${ISSUE_NUMBER}-autostart"
-
           git config user.name "CoderLinus"
           git config user.email "coder.linus@protonmail.com"
-
           git fetch origin main
           git checkout -B "$BRANCH" origin/main
 
           mkdir -p .github/autostart
-          cat > .github/autostart/issue-${ISSUE_NUMBER}.md <<EOF
-          # Auto-start scaffold for issue #${ISSUE_NUMBER}
-          Title: ${ISSUE_TITLE}
-
-          This scaffold was generated automatically to start Linus' execution flow.
-          Replace with real implementation commits.
-          EOF
-
+          echo "Autostart scaffold for issue #${ISSUE_NUMBER}" > .github/autostart/issue-${ISSUE_NUMBER}.md
           git add .github/autostart/issue-${ISSUE_NUMBER}.md
           git commit -m "chore(autostart): scaffold for issue #${ISSUE_NUMBER}" || true
           git push -u origin "$BRANCH" || true
 
-          # Create PR if not exists
-          EXISTING=$(gh pr list --search "head:${BRANCH}" --json number --jq 'length')
+          EXISTING=$(gh pr list --search "head:${BRANCH} is:open" --json number --jq 'length')
           if [ "$EXISTING" = "0" ]; then
             gh pr create \
               --base main \
               --head "$BRANCH" \
-              --title "wip: issue #${ISSUE_NUMBER} implementation kickoff" \
-              --body "Auto-start PR scaffold for #${ISSUE_NUMBER}.\n\nCloses #${ISSUE_NUMBER}\n\n- [ ] Linus: implement fix\n- [ ] Leon: review\n- [ ] Helen: QA" \
+              --title "wip: issue #${ISSUE_NUMBER} implementation" \
+              --body "Auto-started by Linus assignment.\n\nCloses #${ISSUE_NUMBER}" \
               --draft
           fi
 
-      - name: Label PR + request reviewers (autostart branch)
-        if: steps.gate.outputs.run == 'true' && secrets.CODERLINUS_PAT != ''
-        env:
-          GH_TOKEN: ${{ secrets.CODERLINUS_PAT }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-        run: |
-          set -euo pipefail
-          BRANCH="fix/issue-${ISSUE_NUMBER}-autostart"
-          PR_NUMBER=$(gh pr list --search "head:${BRANCH}" --json number --jq '.[0].number')
-          [ -z "$PR_NUMBER" ] && exit 0
-          gh pr edit "$PR_NUMBER" --add-label role:reviewer-leon --add-label role:tester-helen --add-label status:in-review || true
-          gh pr edit "$PR_NUMBER" --remove-label status:triage --remove-label status:in-dev || true
-          gh pr edit "$PR_NUMBER" --add-reviewer LeonReviewer --add-reviewer TesterHelen || true
-
-      - name: Missing PAT warning
-        if: steps.gate.outputs.run == 'true' && secrets.CODERLINUS_PAT == ''
+      - if: steps.gate.outputs.run == 'true' && secrets.CODERLINUS_PAT == ''
         uses: actions/github-script@v7
         with:
           script: |
-            const issue = context.payload.issue;
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: issue.number,
-              body: '⚠️ `CODERLINUS_PAT` secret is missing. I moved status to `in-dev` but cannot auto-create branch/PR as @CoderLinus yet.'
+              issue_number: context.payload.issue.number,
+              body: '⚠️ `CODERLINUS_PAT` missing: status moved to in-dev, but draft PR auto-create could not run as @CoderLinus.'
             });
 
-  pr-routing:
-    if: github.event_name == 'pull_request_target' && github.event.action != 'closed'
+  reviewers-when-ready:
+    if: github.event_name == 'pull_request_target' && github.event.action == 'ready_for_review'
     runs-on: ubuntu-latest
     steps:
-      - name: Apply role/status labels and request reviewers
-        uses: actions/github-script@v7
+      - uses: actions/github-script@v7
         with:
           script: |
             const pr = context.payload.pull_request;
-            const issue_number = pr.number;
-
-            const current = await github.rest.issues.listLabelsOnIssue({
+            const labelsResp = await github.rest.issues.listLabelsOnIssue({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number
+              issue_number: pr.number
             });
-
-            const labels = new Set(current.data.map(l => l.name));
-            const statusLabels = ['status:triage', 'status:in-dev', 'status:in-review', 'status:qa', 'status:done'];
-            for (const l of statusLabels) labels.delete(l);
-            ['role:reviewer-leon', 'role:tester-helen', 'status:in-review'].forEach(l => labels.add(l));
+            const labels = new Set(labelsResp.data.map(l => l.name));
+            ['status:triage','status:in-dev','status:qa','status:done'].forEach(l => labels.delete(l));
+            labels.add('status:in-review');
+            labels.add('role:reviewer-leon');
+            labels.add('role:tester-helen');
 
             await github.rest.issues.update({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number,
+              issue_number: pr.number,
               labels: [...labels]
             });
 
-            const reviewerCandidates = ['LeonReviewer', 'TesterHelen'];
-            const reviewers = reviewerCandidates.filter(r => r.toLowerCase() !== (pr.user?.login || '').toLowerCase());
+            const reviewers = ['LeonReviewer','TesterHelen'].filter(r => r.toLowerCase() !== (pr.user?.login || '').toLowerCase());
             if (reviewers.length) {
               await github.rest.pulls.requestReviewers({
                 owner: context.repo.owner,
@@ -224,63 +175,75 @@ jobs:
               }).catch(() => {});
             }
 
-  review-status-sync:
+  review-status-sync-and-merge:
     if: github.event_name == 'pull_request_review'
     runs-on: ubuntu-latest
     steps:
-      - name: Sync PR labels from review state
-        uses: actions/github-script@v7
+      - uses: actions/github-script@v7
         with:
           script: |
-            const review = context.payload.review;
             const pr = context.payload.pull_request;
-            const reviewer = (review.user?.login || '').toLowerCase();
-            const state = (review.state || '').toUpperCase();
+            const state = (context.payload.review?.state || '').toUpperCase();
 
-            const current = await github.rest.issues.listLabelsOnIssue({
+            const labelsResp = await github.rest.issues.listLabelsOnIssue({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: pr.number
             });
-            const labels = new Set(current.data.map(l => l.name));
-
-            const clearStatuses = () => ['status:triage','status:in-dev','status:in-review','status:qa','status:done'].forEach(l => labels.delete(l));
+            const labels = new Set(labelsResp.data.map(l => l.name));
+            const clear = () => ['status:triage','status:in-dev','status:in-review','status:qa','status:done'].forEach(l => labels.delete(l));
 
             if (state === 'CHANGES_REQUESTED') {
-              clearStatuses();
+              clear();
               labels.add('status:in-dev');
-            } else if (state === 'APPROVED' && reviewer === 'leonreviewer') {
-              clearStatuses();
-              labels.add('status:qa');
+              await github.rest.issues.update({ owner: context.repo.owner, repo: context.repo.repo, issue_number: pr.number, labels: [...labels] });
+              return;
             }
 
-            await github.rest.issues.update({
+            const reviews = await github.rest.pulls.listReviews({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: pr.number,
-              labels: [...labels]
+              pull_number: pr.number,
+              per_page: 100
             });
+
+            const latestByUser = new Map();
+            for (const r of reviews.data) latestByUser.set((r.user?.login || '').toLowerCase(), (r.state || '').toUpperCase());
+
+            const leonApproved = latestByUser.get('leonreviewer') === 'APPROVED';
+            const helenApproved = latestByUser.get('testerhelen') === 'APPROVED';
+
+            if (leonApproved && !helenApproved) {
+              clear();
+              labels.add('status:qa');
+              await github.rest.issues.update({ owner: context.repo.owner, repo: context.repo.repo, issue_number: pr.number, labels: [...labels] });
+              return;
+            }
+
+            if (leonApproved && helenApproved) {
+              // Merge only after Helen test done (approved) and Leon approved.
+              await github.rest.pulls.merge({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number,
+                merge_method: 'squash'
+              }).catch(() => {});
+            }
 
   pr-close-sync:
     if: github.event_name == 'pull_request_target' && github.event.action == 'closed' && github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
-      - name: Mark merged PR as done
-        uses: actions/github-script@v7
+      - uses: actions/github-script@v7
         with:
           script: |
             const pr = context.payload.pull_request;
-            const current = await github.rest.issues.listLabelsOnIssue({
+            const labelsResp = await github.rest.issues.listLabelsOnIssue({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: pr.number
             });
-            const labels = new Set(current.data.map(l => l.name));
+            const labels = new Set(labelsResp.data.map(l => l.name));
             ['status:triage','status:in-dev','status:in-review','status:qa'].forEach(l => labels.delete(l));
             labels.add('status:done');
-            await github.rest.issues.update({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: pr.number,
-              labels: [...labels]
-            });
+            await github.rest.issues.update({ owner: context.repo.owner, repo: context.repo.repo, issue_number: pr.number, labels: [...labels] });
