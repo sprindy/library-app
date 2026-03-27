@@ -1,26 +1,32 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Auto-kickoff bridge: when tester-flow issues are in-dev and assigned to CoderLinus,
-# create a local branch in Linus workspace and post a "started" comment once.
+# Auto-route bridge for Linus:
+# 1) ensure local branch kickoff for tester-flow in-dev issues
+# 2) automatically start Codex implementation once per issue
 
 REPO="sprindy/library-app"
 BASE="/Users/sprindy/.openclaw/workspace/agent-workspaces"
 LINUS_REPO="$BASE/linus/library-app"
+RUN_DIR="$BASE/linus/runs"
 export GH_CONFIG_DIR="$BASE/.gh-profiles/linus"
-MARKER="[linus-local-started:v1]"
+
+KICKOFF_MARKER="[linus-local-started:v1]"
+IMPL_MARKER="[linus-impl-started:v1]"
+
+mkdir -p "$RUN_DIR"
 
 if ! command -v gh >/dev/null 2>&1; then
-  echo "gh not found" >&2
+  echo "ERROR: gh not found" >&2
+  exit 1
+fi
+if ! command -v codex >/dev/null 2>&1; then
+  echo "ERROR: codex not found" >&2
   exit 1
 fi
 
-# Find candidate issues
 ISSUES=$(gh issue list --repo "$REPO" --state open --assignee CoderLinus --label source:tester --label status:in-dev --json number,title,url --jq '.[] | @base64')
-
-if [[ -z "${ISSUES}" ]]; then
-  exit 0
-fi
+[[ -z "${ISSUES}" ]] && exit 0
 
 acted=0
 while IFS= read -r row; do
@@ -30,13 +36,7 @@ while IFS= read -r row; do
   num=$(_jq '.number')
   title=$(_jq '.title')
 
-  # Skip if Linus already posted kickoff marker
-  existing=$(gh issue view "$num" --repo "$REPO" --comments --json comments --jq '[.comments[] | select((.author.login=="CoderLinus") and ((.body // "") | contains("[linus-local-started:v1]")))] | length')
-  if [[ "$existing" != "0" ]]; then
-    continue
-  fi
-
-  # Skip if there is already an open PR linked to this issue
+  # Skip when PR already exists
   linked_prs=$(gh pr list --repo "$REPO" --state open --search "#${num}" --json number --jq 'length')
   if [[ "$linked_prs" != "0" ]]; then
     continue
@@ -46,22 +46,69 @@ while IFS= read -r row; do
   branch="linus/issue-${num}-${slug}"
 
   # Prepare local branch in Linus clone
-  git -C "$LINUS_REPO" fetch upstream main
+  git -C "$LINUS_REPO" fetch upstream main || true
   git -C "$LINUS_REPO" checkout main
-  git -C "$LINUS_REPO" pull --ff-only upstream main
+  git -C "$LINUS_REPO" pull --ff-only upstream main || true
   if git -C "$LINUS_REPO" rev-parse --verify "$branch" >/dev/null 2>&1; then
     git -C "$LINUS_REPO" checkout "$branch"
   else
     git -C "$LINUS_REPO" checkout -b "$branch"
   fi
 
-  gh issue comment "$num" --repo "$REPO" --body "$MARKER Picked up for implementation locally.\n\n- Branch: \\`$branch\\`\n- Workspace: \\`$LINUS_REPO\\`\n- Next: implement fix and open PR with \\`Fixes #$num\\`."
+  # Kickoff comment (idempotent)
+  kickoff_existing=$(gh issue view "$num" --repo "$REPO" --comments --json comments --jq '[.comments[] | select((.author.login=="CoderLinus") and ((.body // "") | contains("[linus-local-started:v1]")))] | length')
+  if [[ "$kickoff_existing" == "0" ]]; then
+    gh issue comment "$num" --repo "$REPO" --body "$KICKOFF_MARKER Picked up for implementation locally.
 
-  echo "kicked off issue #$num on $branch"
+- Branch: \`$branch\`
+- Workspace: \`$LINUS_REPO\`
+- Next: implementation starts automatically via Codex." >/dev/null
+    echo "kicked off issue #$num on $branch"
+    acted=1
+  fi
+
+  # Start implementation once (idempotent marker)
+  impl_existing=$(gh issue view "$num" --repo "$REPO" --comments --json comments --jq '[.comments[] | select((.author.login=="CoderLinus") and ((.body // "") | contains("[linus-impl-started:v1]")))] | length')
+  if [[ "$impl_existing" != "0" ]]; then
+    continue
+  fi
+
+  ts=$(date +%Y%m%d-%H%M%S)
+  log_file="$RUN_DIR/issue-${num}-${ts}.log"
+
+  prompt=$(cat <<EOF
+You are Linus Coder working in repository $LINUS_REPO.
+Task: Fix issue #$num.
+Issue title: $title
+
+Requirements:
+- Implement a real fix for the issue.
+- Run relevant tests/build checks if available.
+- Commit with your git identity configured in this repo.
+- Push branch: $branch
+- Open a PR to main in $REPO with:
+  - title starting with: fix:
+  - body containing: Fixes #$num
+  - request reviewers: LeonReviewer and TesterHelen
+- Keep changes focused only on this issue.
+EOF
+)
+
+  (
+    cd "$LINUS_REPO"
+    nohup codex exec --full-auto "$prompt" >"$log_file" 2>&1 &
+    echo $! > "$RUN_DIR/issue-${num}.pid"
+  )
+
+  gh issue comment "$num" --repo "$REPO" --body "$IMPL_MARKER Codex implementation started.
+
+- Branch: \`$branch\`
+- Log: \`$log_file\`
+- Next: push + PR creation with \`Fixes #$num\`." >/dev/null
+
+  echo "started implementation for issue #$num (log: $log_file)"
   acted=1
 done <<< "$ISSUES"
 
-# Print only when action happened (good for cron noise control)
-if [[ "$acted" == "1" ]]; then
-  exit 0
-fi
+[[ "$acted" == "1" ]] && exit 0
+exit 0
