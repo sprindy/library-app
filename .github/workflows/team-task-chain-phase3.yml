@@ -64,7 +64,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: pr.number,
-              reviewers: ['ReviewerLeon', 'TesterHelen']
+              reviewers: ['LeonReviewer', 'TesterHelen']
             }).catch(err => core.warning(`requestReviewers failed: ${err.message}`));
 
   pr-review-approved-routing:
@@ -79,7 +79,7 @@ jobs:
             if (!review || !pr) return;
 
             if ((review.state || '').toLowerCase() !== 'approved') return;
-            if (review.user?.login !== 'ReviewerLeon') {
+            if (review.user?.login !== 'LeonReviewer') {
               core.info(`Skip: approver is ${review.user?.login}, not ReviewerLeon`);
               return;
             }
