@@ -10,7 +10,7 @@ This repo supports a 3-agent delivery chain with real code workspaces.
 
 Each workspace has repo-local git identity configured:
 
-- Linus → `CoderLinus <coder.linus@protonmail.com>`
+- Linus → `Linus Coder <coder.linus@protonmail.com>`
 - Leon → `LeonReviewer <leon.reviewer@protonmail.com>`
 - Helen → `TesterHelen <tester.helen@protonmail.com>`
 
