@@ -93,5 +93,5 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: issue.number,
-              body: `${marker} @CoderLinus kickoff: this tester-reported bug is now in **status:in-dev**.\n\nPlease start implementation and open a PR; request review from @ReviewerLeon and @TesterHelen once ready.`
+              body: `${marker} @CoderLinus kickoff: this tester-reported bug is now in **status:in-dev**.\n\nPlease start implementation and open a PR; request review from @LeonReviewer and @TesterHelen once ready.`
             });
