@@ -21,12 +21,6 @@ jobs:
             const pr = context.payload.pull_request;
             if (!pr || pr.draft) return;
 
-            // Phase-3 policy: Linus kickoff path
-            if (pr.user?.login !== 'CoderLinus') {
-              core.info(`Skip: PR author is ${pr.user?.login}, not CoderLinus`);
-              return;
-            }
-
             const body = pr.body || '';
             const matches = [...body.matchAll(/(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)/ig)];
             const issueNumbers = [...new Set(matches.map(m => Number(m[1])).filter(Boolean))];
@@ -35,14 +29,7 @@ jobs:
               return;
             }
 
-            // Request Leon + Helen reviewers (best effort/idempotent)
-            await github.rest.pulls.requestReviewers({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: pr.number,
-              reviewers: ['ReviewerLeon', 'TesterHelen']
-            }).catch(err => core.warning(`requestReviewers failed: ${err.message}`));
-
+            let routedAny = false;
             for (const issue_number of issueNumbers) {
               const { data: issue } = await github.rest.issues.get({
                 owner: context.repo.owner,
@@ -63,7 +50,22 @@ jobs:
                 issue_number,
                 labels: [...labels]
               });
+
+              routedAny = true;
             }
+
+            if (!routedAny) {
+              core.info('No tester-flow linked issue found; skip reviewer auto-request.');
+              return;
+            }
+
+            // Request Leon + Helen reviewers (best effort/idempotent)
+            await github.rest.pulls.requestReviewers({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+              reviewers: ['ReviewerLeon', 'TesterHelen']
+            }).catch(err => core.warning(`requestReviewers failed: ${err.message}`));
 
   pr-review-approved-routing:
     if: github.event_name == 'pull_request_review' && github.event.action == 'submitted'
