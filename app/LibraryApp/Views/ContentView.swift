@@ -126,7 +126,7 @@ struct ContentView: View {
             showingAddBookSheet = true
         }
         .onChange(of: commandCenter.focusSearchSignal) { _ in
-            searchIsFocused = true
+            focusSearchField()
         }
     }
 
@@ -240,5 +240,13 @@ struct ContentView: View {
         alertTitle = title
         alertMessage = message
         showingAlert = true
+    }
+
+    private func focusSearchField() {
+        // Re-assert focus on the next runloop so menu-command invocation reliably moves focus.
+        searchIsFocused = false
+        Task { @MainActor in
+            searchIsFocused = true
+        }
     }
 }

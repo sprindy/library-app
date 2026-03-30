@@ -1,52 +1,55 @@
 # REVIEW_REPORT
 
 ## 1) Verdict
-PASS WITH NOTES
+BLOCKED (`REQUEST_CHANGES` for PR #9)
 
 ## 2) Blockers (if any)
-- None.
+1. PR branch does not compile due invalid command group placement.
+   - File: `app/LibraryApp/LibraryAppApp.swift:22`
+   - Code: `CommandGroup(replacing: .find)`
+   - Error from build/test gate: `type 'CommandGroupPlacement' has no member 'find'`
+   - Impact: app cannot build or test; issue fix cannot be validated.
 
-## 3) High/Medium/Low Findings
+## 3) High/Medium/Low findings
 
 ### High
-- None.
+1. No regression coverage for command-based search focus behavior.
+   - This PR changes command routing/focus behavior but adds no tests or UI smoke evidence for `Cmd+F` and menu action behavior.
 
 ### Medium
-1. Add flow dismisses the form even when persistence fails.
-   - Evidence: `BookFormView.save()` always calls `dismiss()` after `onSave(formData)` ([app/LibraryApp/Views/BookFormView.swift](./LibraryApp/Views/BookFormView.swift), lines 82-87), while persistence errors are only surfaced via alert in `ContentView.persistChanges` ([app/LibraryApp/Views/ContentView.swift](./LibraryApp/Views/ContentView.swift), lines 203-208).
-   - Risk: user input can be lost from the creation form after a save failure.
-   - Recommendation: return success/failure from `onSave`, only dismiss on success, and preserve form values on failure.
-
-2. Reviewer could not execute build/test quality gates in this sandbox.
-   - Evidence: `xcodebuild` invocation failed in this environment with simulator/logging permission issues and package detection failure; `swift build` failed due sandboxed cache/toolchain constraints.
-   - Risk: release confidence depends on external validation.
-   - Recommendation: run `xcodebuild -scheme LibraryApp -destination 'platform=macOS' build` and `... test` on a full local Xcode environment before tester sign-off.
+1. `focusSearchField()` uses async re-focus (`Task { @MainActor ... }`) but there is no behavioral coverage for repeated command taps or sheet-open states.
+   - Risk is moderate because behavior is timing-sensitive and this code path was changed specifically for reliability.
 
 ### Low
-1. Test coverage is good for search/CSV/basic persistence, but there is no explicit unit test for delete path behavior or list reordering by `updatedAt` after edits.
-   - Recommendation: add focused persistence tests for delete and `updatedAt`-driven ordering semantics.
+1. None.
 
-2. `Cmd+N` is bound in both command menu and Add button.
-   - Evidence: [app/LibraryApp/LibraryAppApp.swift](./LibraryApp/LibraryAppApp.swift) line 19 and [app/LibraryApp/Views/ContentView.swift](./LibraryApp/Views/ContentView.swift) line 142.
-   - Risk: minor shortcut ambiguity / duplicate bindings.
+## 4) Spec coverage matrix (feature -> status)
+- Add a book -> UNCHANGED by this PR
+- List books -> UNCHANGED by this PR
+- Search books by title/author -> BLOCKED (build failure prevents validation)
+- Update status -> UNCHANGED by this PR
+- Delete a book with confirmation -> UNCHANGED by this PR
+- Persist data locally -> UNCHANGED by this PR
+- Export current library to CSV -> UNCHANGED by this PR
+- Keyboard shortcuts (`Cmd+N`, `Cmd+F`) -> BLOCKED (`Cmd+F` command implementation fails to compile)
 
-## 4) Spec Coverage Matrix (feature -> status)
-- Add book (title required, author required, status, optional notes): **Implemented**
-- List all books sorted by updated date desc: **Implemented** (`@Query(sort: \Book.updatedAt, order: .reverse)`)
-- Search books by title/author (case-insensitive contains): **Implemented** (`LibrarySearch.filter`)
-- Update status from list/detail: **Implemented**
-- Delete book with confirmation: **Implemented**
-- Local persistence (SwiftData/Core Data): **Implemented** (SwiftData)
-- Export current library to CSV: **Implemented** (header + quoting/escaping present)
-- Native macOS look and feel: **Implemented** (SwiftUI macOS patterns)
-- Keyboard shortcuts (`Cmd+N`, `Cmd+F`): **Implemented**
-- Empty state for no books: **Implemented**
-- Validation errors explicit and non-crashing: **Implemented**
-- Unit tests for model/persistence/search logic: **Partially implemented** (search + CSV + basic persistence covered; delete and ordering semantics not explicitly covered)
-- README build/run/test instructions: **Implemented**
-- Build/test gates executed in this review environment: **Not verified in sandbox**
+## 5) Required fixes before tester sign-off
+1. Replace `CommandGroup(replacing: .find)` with a valid SwiftUI command placement/menu strategy that compiles on target toolchain.
+2. Re-run and post passing gate results:
+   - `xcodebuild -scheme LibraryApp -destination 'platform=macOS' build`
+   - `xcodebuild -scheme LibraryApp -destination 'platform=macOS' test`
+3. Add verification for the changed search-focus behavior (automated or documented manual smoke steps) to reduce regression risk.
 
-## 5) Required Fixes Before Tester Sign-off
-1. Validate build and test gates on a full Xcode machine and attach pass/fail evidence.
-2. Preferably fix add-form dismissal-on-save-failure behavior so user input is retained when persistence fails.
-3. Add at least one test for delete persistence and one for `updatedAt` ordering after mutation.
+## 6) Checks run (this review)
+1. `xcodebuild -scheme LibraryApp -destination 'platform=macOS' build` (from `app/`) -> FAIL  
+   - `LibraryAppApp.swift:22:38: error: type 'CommandGroupPlacement' has no member 'find'`
+2. `xcodebuild -scheme LibraryApp -destination 'platform=macOS' test` (from `app/`) -> FAIL  
+   - Same compile error; tests not executed due build failure.
+
+## 7) Submission status
+1. Intended PR action: `REQUEST_CHANGES` on PR #9 as `LeonReviewer`.
+2. Intended issue marker comment:
+   - `[leon-review-submitted:v1] verdict: REQUEST_CHANGES next_action: replace invalid CommandGroup placement, rerun build/test, and re-request review.`
+3. Actual result in this environment:
+   - `gh pr review 9 --request-changes ...` -> `GraphQL: Resource not accessible by personal access token (addPullRequestReview)`
+   - `gh api -X POST repos/sprindy/library-app/issues/8/comments ...` -> `HTTP 403 Resource not accessible by personal access token`
