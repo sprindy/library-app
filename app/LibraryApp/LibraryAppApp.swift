@@ -19,7 +19,7 @@ struct LibraryAppApp: App {
                 .keyboardShortcut("n", modifiers: .command)
             }
 
-            CommandGroup(replacing: .find) {
+            CommandMenu("Search") {
                 Button("Focus Search") {
                     commandCenter.triggerFocusSearch()
                 }
