@@ -112,8 +112,15 @@ struct ContentView: View {
             Text(alertMessage)
         }
         .onAppear {
+            activateAppWindow()
+
             if selectedBookID == nil {
                 selectedBookID = filteredBooks.first?.id
+            }
+
+            // If Cmd+F fired during startup before observers were attached, apply focus now.
+            if commandCenter.focusSearchSignal > 0 {
+                focusSearchField()
             }
         }
         .onChange(of: filteredBooks.map(\.id)) { ids in
@@ -243,10 +250,19 @@ struct ContentView: View {
     }
 
     private func focusSearchField() {
+        // Ensure keyboard focus leaves the launching terminal and returns to the app window.
+        activateAppWindow()
+
         // Re-assert focus on the next runloop so menu-command invocation reliably moves focus.
         searchIsFocused = false
         Task { @MainActor in
+            activateAppWindow()
             searchIsFocused = true
         }
+    }
+
+    private func activateAppWindow() {
+        NSApp.activate(ignoringOtherApps: true)
+        (NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first)?.makeKeyAndOrderFront(nil)
     }
 }
