@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftData
 import SwiftUI
 import UniformTypeIdentifiers
@@ -18,8 +19,7 @@ struct ContentView: View {
     @State private var alertTitle: String = ""
     @State private var alertMessage: String = ""
     @State private var showingAlert: Bool = false
-
-    @FocusState private var searchIsFocused: Bool
+    @State private var searchFocusToken: Int = 0
 
     private var filteredBooks: [Book] {
         LibrarySearch.filter(books: books, query: searchText)
@@ -129,19 +129,17 @@ struct ContentView: View {
                 self.selectedBookID = ids.first
             }
         }
-        .onChange(of: commandCenter.newBookSignal) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .uiCommandCenterNewBookRequested)) { _ in
             showingAddBookSheet = true
         }
-        .onChange(of: commandCenter.focusSearchSignal) { _ in
+        .onReceive(NotificationCenter.default.publisher(for: .uiCommandCenterFocusSearchRequested)) { _ in
             focusSearchField()
         }
     }
 
     private var searchBar: some View {
         HStack(spacing: 10) {
-            TextField("Search by title or author", text: $searchText)
-                .textFieldStyle(.roundedBorder)
-                .focused($searchIsFocused)
+            SearchTextField(text: $searchText, focusToken: searchFocusToken)
 
             Button("Add") {
                 showingAddBookSheet = true
@@ -252,17 +250,67 @@ struct ContentView: View {
     private func focusSearchField() {
         // Ensure keyboard focus leaves the launching terminal and returns to the app window.
         activateAppWindow()
+        searchFocusToken += 1
 
         // Re-assert focus on the next runloop so menu-command invocation reliably moves focus.
-        searchIsFocused = false
         Task { @MainActor in
+            await Task.yield()
             activateAppWindow()
-            searchIsFocused = true
+            searchFocusToken += 1
         }
     }
 
     private func activateAppWindow() {
         NSApp.activate(ignoringOtherApps: true)
         (NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first)?.makeKeyAndOrderFront(nil)
+    }
+}
+
+private struct SearchTextField: NSViewRepresentable {
+    @Binding var text: String
+    var focusToken: Int
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text)
+    }
+
+    func makeNSView(context: Context) -> NSSearchField {
+        let field = NSSearchField()
+        field.placeholderString = "Search by title or author"
+        field.delegate = context.coordinator
+        return field
+    }
+
+    func updateNSView(_ nsView: NSSearchField, context: Context) {
+        if nsView.stringValue != text {
+            nsView.stringValue = text
+        }
+
+        context.coordinator.text = $text
+
+        if context.coordinator.lastFocusToken != focusToken {
+            context.coordinator.lastFocusToken = focusToken
+
+            DispatchQueue.main.async {
+                guard let window = nsView.window else { return }
+                NSApp.activate(ignoringOtherApps: true)
+                window.makeKeyAndOrderFront(nil)
+                window.makeFirstResponder(nsView)
+            }
+        }
+    }
+
+    final class Coordinator: NSObject, NSSearchFieldDelegate {
+        var text: Binding<String>
+        var lastFocusToken: Int = -1
+
+        init(text: Binding<String>) {
+            self.text = text
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let field = notification.object as? NSSearchField else { return }
+            text.wrappedValue = field.stringValue
+        }
     }
 }

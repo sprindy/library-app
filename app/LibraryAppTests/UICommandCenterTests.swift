@@ -23,4 +23,22 @@ final class UICommandCenterTests: XCTestCase {
         commandCenter.triggerFocusSearch()
         XCTAssertEqual(commandCenter.focusSearchSignal, 2)
     }
+
+    func testTriggerNewBookPostsNotification() {
+        let commandCenter = UICommandCenter()
+        let expectation = expectation(forNotification: .uiCommandCenterNewBookRequested, object: nil)
+
+        commandCenter.triggerNewBook()
+
+        wait(for: [expectation], timeout: 1.0)
+    }
+
+    func testTriggerFocusSearchPostsNotification() {
+        let commandCenter = UICommandCenter()
+        let expectation = expectation(forNotification: .uiCommandCenterFocusSearchRequested, object: nil)
+
+        commandCenter.triggerFocusSearch()
+
+        wait(for: [expectation], timeout: 1.0)
+    }
 }
