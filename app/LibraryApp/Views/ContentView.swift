@@ -312,6 +312,7 @@ private struct SearchTextField: NSViewRepresentable {
         }
 
         @objc func performSearch(_ sender: NSSearchField) {
+            focusSearchFieldEditorForTyping(sender)
             text.wrappedValue = sender.stringValue
         }
 
@@ -329,5 +330,15 @@ private struct SearchTextField: NSViewRepresentable {
             // Clicking the clear/search cancel button can bypass text-change callbacks.
             text.wrappedValue = sender.stringValue
         }
+    }
+}
+
+func focusSearchFieldEditorForTyping(_ field: NSSearchField) {
+    // Clicking the search button should also hand keyboard input to this field.
+    if let window = field.window {
+        window.makeFirstResponder(field)
+    }
+    if let editor = field.currentEditor() {
+        editor.selectedRange = NSRange(location: field.stringValue.count, length: 0)
     }
 }
