@@ -278,6 +278,9 @@ private struct SearchTextField: NSViewRepresentable {
         let field = NSSearchField()
         field.placeholderString = "Search by title or author"
         field.delegate = context.coordinator
+        field.target = context.coordinator
+        field.action = #selector(Coordinator.performSearch(_:))
+        field.sendsWholeSearchString = true
         return field
     }
 
@@ -308,9 +311,23 @@ private struct SearchTextField: NSViewRepresentable {
             self.text = text
         }
 
+        @objc func performSearch(_ sender: NSSearchField) {
+            text.wrappedValue = sender.stringValue
+        }
+
         func controlTextDidChange(_ notification: Notification) {
             guard let field = notification.object as? NSSearchField else { return }
             text.wrappedValue = field.stringValue
+        }
+
+        func controlTextDidEndEditing(_ notification: Notification) {
+            guard let field = notification.object as? NSSearchField else { return }
+            text.wrappedValue = field.stringValue
+        }
+
+        func searchFieldDidEndSearching(_ sender: NSSearchField) {
+            // Clicking the clear/search cancel button can bypass text-change callbacks.
+            text.wrappedValue = sender.stringValue
         }
     }
 }
