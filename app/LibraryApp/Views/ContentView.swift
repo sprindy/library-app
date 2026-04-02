@@ -295,10 +295,7 @@ private struct SearchTextField: NSViewRepresentable {
             context.coordinator.lastFocusToken = focusToken
 
             DispatchQueue.main.async {
-                guard let window = nsView.window else { return }
-                NSApp.activate(ignoringOtherApps: true)
-                window.makeKeyAndOrderFront(nil)
-                window.makeFirstResponder(nsView)
+                focusSearchFieldEditorForTyping(nsView)
             }
         }
     }
@@ -334,11 +331,28 @@ private struct SearchTextField: NSViewRepresentable {
 }
 
 func focusSearchFieldEditorForTyping(_ field: NSSearchField) {
-    // Clicking the search button should also hand keyboard input to this field.
-    if let window = field.window {
-        window.makeFirstResponder(field)
-    }
+    // Clicking search controls should always leave the caret ready for immediate typing.
+    guard let window = field.window else { return }
+
+    let caretLocation = (field.stringValue as NSString).length
+
+    NSApp.activate(ignoringOtherApps: true)
+    NSRunningApplication.current.activate(options: [.activateAllWindows])
+    window.makeKeyAndOrderFront(nil)
+    window.makeFirstResponder(field)
+
     if let editor = field.currentEditor() {
-        editor.selectedRange = NSRange(location: field.stringValue.count, length: 0)
+        editor.selectedRange = NSRange(location: caretLocation, length: 0)
+    }
+
+    // Re-assert on next runloop for launchd/terminal-launched windows where first responder
+    // can be transiently reset right after search-action dispatch.
+    DispatchQueue.main.async {
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        window.makeFirstResponder(field)
+        if let editor = field.currentEditor() {
+            editor.selectedRange = NSRange(location: caretLocation, length: 0)
+        }
     }
 }
