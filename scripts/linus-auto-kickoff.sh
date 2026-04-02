@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Auto-route bridge for Linus:
 # 1) ensure local branch kickoff for ANY open issue assigned to Linus
-# 2) automatically start Codex implementation once per issue
+# 2) automatically start Codex implementation with retry-safe cooldowns.
 
 REPO="sprindy/library-app"
 BASE="/Users/sprindy/.openclaw/workspace/agent-workspaces"
@@ -14,6 +14,9 @@ export GH_CONFIG_DIR="$BASE/.gh-profiles/linus"
 EXPECTED_LOGIN="CoderLinus"
 CRON_JOB_ID="${LINUS_KICKOFF_CRON_JOB_ID:-a47cd449-b172-4c45-8649-7059a8202548}"
 AUTO_DISABLE_ON_OPEN_PR="${LINUS_AUTO_DISABLE_ON_OPEN_PR:-1}"
+AUTO_AUTH_HEAL="${LINUS_AUTO_AUTH_HEAL:-1}"
+CODEX_TIMEOUT_SECONDS="${LINUS_CODEX_TIMEOUT_SECONDS:-2100}"
+RETRY_COOLDOWN_SECONDS="${LINUS_RETRY_COOLDOWN_SECONDS:-900}"
 
 # Prevent shell-exported GH_TOKEN/GITHUB_TOKEN from overriding role profile auth.
 unset GH_TOKEN
@@ -21,8 +24,83 @@ unset GITHUB_TOKEN
 
 KICKOFF_MARKER="[linus-local-started:v1]"
 IMPL_MARKER="[linus-impl-started:v1]"
+FAIL_MARKER="[linus-impl-failed:v1]"
 
 mkdir -p "$RUN_DIR" "$STATE_DIR"
+
+need_bin() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "ERROR: $1 not found" >&2
+    exit 1
+  }
+}
+
+run_with_timeout() {
+  local timeout_seconds="$1"
+  shift
+
+  if [[ "$timeout_seconds" -le 0 ]]; then
+    "$@"
+    return $?
+  fi
+
+  "$@" &
+  local cmd_pid=$!
+
+  (
+    sleep "$timeout_seconds"
+    if kill -0 "$cmd_pid" >/dev/null 2>&1; then
+      kill -TERM "$cmd_pid" >/dev/null 2>&1 || true
+      sleep 5
+      kill -KILL "$cmd_pid" >/dev/null 2>&1 || true
+    fi
+  ) &
+  local guard_pid=$!
+
+  local rc=0
+  wait "$cmd_pid" || rc=$?
+  kill "$guard_pid" >/dev/null 2>&1 || true
+  wait "$guard_pid" >/dev/null 2>&1 || true
+
+  # Normalize timeout exits so caller can detect and comment clearly.
+  if [[ "$rc" -eq 143 || "$rc" -eq 137 ]]; then
+    return 124
+  fi
+  return "$rc"
+}
+
+ensure_role_auth() {
+  local pat="${CODER_PAT:-}"
+
+  if ! gh auth status -h github.com >/dev/null 2>&1; then
+    if [[ "$AUTO_AUTH_HEAL" == "1" && -n "$pat" ]]; then
+      gh auth logout -h github.com -u "$EXPECTED_LOGIN" >/dev/null 2>&1 || true
+      printf '%s' "$pat" | gh auth login -h github.com --with-token -p https >/dev/null
+    else
+      echo "ERROR: invalid GitHub auth for Linus profile (GH_CONFIG_DIR=$GH_CONFIG_DIR). Export CODER_PAT to auto-heal." >&2
+      exit 1
+    fi
+  fi
+
+  gh auth switch -h github.com -u "$EXPECTED_LOGIN" >/dev/null 2>&1 || true
+  local actual_login
+  actual_login="$(gh api user --jq .login 2>/dev/null || true)"
+  if [[ "$actual_login" == "$EXPECTED_LOGIN" ]]; then
+    return 0
+  fi
+
+  if [[ "$AUTO_AUTH_HEAL" == "1" && -n "$pat" ]]; then
+    gh auth logout -h github.com -u "$EXPECTED_LOGIN" >/dev/null 2>&1 || true
+    printf '%s' "$pat" | gh auth login -h github.com --with-token -p https >/dev/null
+    gh auth switch -h github.com -u "$EXPECTED_LOGIN" >/dev/null 2>&1 || true
+    actual_login="$(gh api user --jq .login 2>/dev/null || true)"
+  fi
+
+  if [[ "$actual_login" != "$EXPECTED_LOGIN" ]]; then
+    echo "ERROR: authenticated as '$actual_login', expected '$EXPECTED_LOGIN' (GH_CONFIG_DIR=$GH_CONFIG_DIR)" >&2
+    exit 1
+  fi
+}
 
 disable_kickoff_cron_if_configured() {
   local reason="$1"
@@ -44,25 +122,11 @@ disable_kickoff_cron_if_configured() {
   fi
 }
 
-if ! command -v gh >/dev/null 2>&1; then
-  echo "ERROR: gh not found" >&2
-  exit 1
-fi
-if ! command -v codex >/dev/null 2>&1; then
-  echo "ERROR: codex not found" >&2
-  exit 1
-fi
-
-if ! gh auth status -h github.com >/dev/null 2>&1; then
-  echo "ERROR: invalid GitHub auth for Linus profile (GH_CONFIG_DIR=$GH_CONFIG_DIR)" >&2
-  exit 1
-fi
-gh auth switch -h github.com -u "$EXPECTED_LOGIN" >/dev/null 2>&1 || true
-actual_login="$(gh api user --jq .login 2>/dev/null || true)"
-if [[ "$actual_login" != "$EXPECTED_LOGIN" ]]; then
-  echo "ERROR: authenticated as '$actual_login', expected '$EXPECTED_LOGIN' (GH_CONFIG_DIR=$GH_CONFIG_DIR)" >&2
-  exit 1
-fi
+need_bin gh
+need_bin codex
+need_bin jq
+need_bin git
+ensure_role_auth
 
 ISSUES=$(gh issue list --repo "$REPO" --state open --assignee CoderLinus --json number,title,url,labels --jq '.[] | @base64')
 [[ -z "${ISSUES}" ]] && exit 0
@@ -139,7 +203,7 @@ while IFS= read -r row; do
       cooldown_ref="$(stat -f %m "$latest_log" 2>/dev/null || echo 0)"
     fi
   fi
-  if (( cooldown_ref > 0 && now_epoch - cooldown_ref < 900 )); then
+  if (( cooldown_ref > 0 && now_epoch - cooldown_ref < RETRY_COOLDOWN_SECONDS )); then
     continue
   fi
 
@@ -165,13 +229,7 @@ Requirements:
 EOF
 )
 
-  (
-    cd "$LINUS_REPO"
-    # Run Codex without sandboxing so it can use git + gh normally.
-    nohup codex exec --dangerously-bypass-approvals-and-sandbox -m gpt-5.3-codex "$prompt" >"$log_file" 2>&1 &
-    echo $! > "$pid_file"
-    date -u +"%Y-%m-%dT%H:%M:%SZ" > "$marker_file"
-  )
+  date -u +"%Y-%m-%dT%H:%M:%SZ" > "$marker_file"
 
   gh issue comment "$num" --repo "$REPO" --body "$IMPL_MARKER Codex implementation started.
 
@@ -179,7 +237,38 @@ EOF
 - Log: \`$log_file\`
 - Next: push + PR creation with \`Fixes #$num\`." >/dev/null || true
 
-  echo "started implementation for issue #$num (log: $log_file)"
+  echo "$$" > "$pid_file"
+  codex_rc=0
+  (
+    cd "$LINUS_REPO"
+    # Foreground execution is more reliable under launchd than detached nohup jobs.
+    run_with_timeout "$CODEX_TIMEOUT_SECONDS" \
+      codex exec --dangerously-bypass-approvals-and-sandbox -m gpt-5.3-codex "$prompt"
+  ) >"$log_file" 2>&1 || codex_rc=$?
+  rm -f "$pid_file"
+
+  linked_prs_after=$(gh pr list --repo "$REPO" --state open --search "#${num}" --json number --jq 'length')
+  if [[ "$linked_prs_after" != "0" ]]; then
+    echo "implementation finished for issue #$num (PR detected, log: $log_file)"
+    acted=1
+    continue
+  fi
+
+  if [[ "$codex_rc" -eq 124 ]]; then
+    fail_reason="timed out after ${CODEX_TIMEOUT_SECONDS}s"
+  elif [[ "$codex_rc" -ne 0 ]]; then
+    fail_reason="exited with code ${codex_rc}"
+  else
+    fail_reason="completed without opening a PR"
+  fi
+
+  gh issue comment "$num" --repo "$REPO" --body "$FAIL_MARKER Implementation attempt did not produce a PR.
+
+- Branch: \`$branch\`
+- Result: $fail_reason
+- Log: \`$log_file\`
+- Next: retry after cooldown (\`${RETRY_COOLDOWN_SECONDS}s\`) or push/manual PR." >/dev/null || true
+  echo "warning: issue #$num implementation attempt failed ($fail_reason, log: $log_file)" >&2
   acted=1
 done <<< "$ISSUES"
 

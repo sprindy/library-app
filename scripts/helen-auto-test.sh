@@ -7,10 +7,14 @@ HELEN_REPO="$BASE/helen/library-app"
 LINUS_REPO="$BASE/linus/library-app"
 LEON_REPO="$BASE/leon/library-app"
 RUN_DIR="$BASE/helen/runs"
+STATE_DIR="$RUN_DIR/state"
 export GH_CONFIG_DIR="$BASE/.gh-profiles/helen"
 EXPECTED_LOGIN="TesterHelen"
 CRON_JOB_ID="${HELEN_TEST_CRON_JOB_ID:-d33e2e65-c67d-4194-986c-e9dbb3c417dd}"
 AUTO_DISABLE_ON_QA_DONE="${HELEN_AUTO_DISABLE_ON_QA_DONE:-1}"
+AUTO_AUTH_HEAL="${HELEN_AUTO_AUTH_HEAL:-1}"
+CODEX_TIMEOUT_SECONDS="${HELEN_CODEX_TIMEOUT_SECONDS:-1800}"
+RETRY_COOLDOWN_SECONDS="${HELEN_RETRY_COOLDOWN_SECONDS:-900}"
 
 # Prevent shell-exported GH_TOKEN/GITHUB_TOKEN from overriding role profile auth.
 unset GH_TOKEN
@@ -18,8 +22,81 @@ unset GITHUB_TOKEN
 
 START_MARKER="[helen-test-started:v1]"
 DONE_MARKER="[helen-test-submitted:v1]"
+FAIL_MARKER="[helen-test-failed:v1]"
 
-mkdir -p "$RUN_DIR"
+mkdir -p "$RUN_DIR" "$STATE_DIR"
+
+need_bin() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "ERROR: $1 not found" >&2
+    exit 1
+  }
+}
+
+run_with_timeout() {
+  local timeout_seconds="$1"
+  shift
+
+  if [[ "$timeout_seconds" -le 0 ]]; then
+    "$@"
+    return $?
+  fi
+
+  "$@" &
+  local cmd_pid=$!
+
+  (
+    sleep "$timeout_seconds"
+    if kill -0 "$cmd_pid" >/dev/null 2>&1; then
+      kill -TERM "$cmd_pid" >/dev/null 2>&1 || true
+      sleep 5
+      kill -KILL "$cmd_pid" >/dev/null 2>&1 || true
+    fi
+  ) &
+  local guard_pid=$!
+
+  local rc=0
+  wait "$cmd_pid" || rc=$?
+  kill "$guard_pid" >/dev/null 2>&1 || true
+  wait "$guard_pid" >/dev/null 2>&1 || true
+  if [[ "$rc" -eq 143 || "$rc" -eq 137 ]]; then
+    return 124
+  fi
+  return "$rc"
+}
+
+ensure_role_auth() {
+  local pat="${TESTER_PAT:-}"
+
+  if ! gh auth status -h github.com >/dev/null 2>&1; then
+    if [[ "$AUTO_AUTH_HEAL" == "1" && -n "$pat" ]]; then
+      gh auth logout -h github.com -u "$EXPECTED_LOGIN" >/dev/null 2>&1 || true
+      printf '%s' "$pat" | gh auth login -h github.com --with-token -p https >/dev/null
+    else
+      echo "ERROR: invalid GitHub auth for Helen profile (GH_CONFIG_DIR=$GH_CONFIG_DIR). Export TESTER_PAT to auto-heal." >&2
+      exit 1
+    fi
+  fi
+
+  gh auth switch -h github.com -u "$EXPECTED_LOGIN" >/dev/null 2>&1 || true
+  local actual_login
+  actual_login="$(gh api user --jq .login 2>/dev/null || true)"
+  if [[ "$actual_login" == "$EXPECTED_LOGIN" ]]; then
+    return 0
+  fi
+
+  if [[ "$AUTO_AUTH_HEAL" == "1" && -n "$pat" ]]; then
+    gh auth logout -h github.com -u "$EXPECTED_LOGIN" >/dev/null 2>&1 || true
+    printf '%s' "$pat" | gh auth login -h github.com --with-token -p https >/dev/null
+    gh auth switch -h github.com -u "$EXPECTED_LOGIN" >/dev/null 2>&1 || true
+    actual_login="$(gh api user --jq .login 2>/dev/null || true)"
+  fi
+
+  if [[ "$actual_login" != "$EXPECTED_LOGIN" ]]; then
+    echo "ERROR: authenticated as '$actual_login', expected '$EXPECTED_LOGIN' (GH_CONFIG_DIR=$GH_CONFIG_DIR)" >&2
+    exit 1
+  fi
+}
 
 disable_test_cron_if_configured() {
   local reason="$1"
@@ -40,37 +117,16 @@ disable_test_cron_if_configured() {
   fi
 }
 
-if ! command -v gh >/dev/null 2>&1; then
-  echo "ERROR: gh not found" >&2
-  exit 1
-fi
-if ! command -v codex >/dev/null 2>&1; then
-  echo "ERROR: codex not found" >&2
-  exit 1
-fi
-if ! command -v jq >/dev/null 2>&1; then
-  echo "ERROR: jq not found" >&2
-  exit 1
-fi
-if ! command -v git >/dev/null 2>&1; then
-  echo "ERROR: git not found" >&2
-  exit 1
-fi
+need_bin gh
+need_bin codex
+need_bin jq
+need_bin git
 if [[ ! -d "$HELEN_REPO/.git" ]]; then
   echo "ERROR: Helen repo workspace not found: $HELEN_REPO" >&2
   exit 1
 fi
 
-if ! gh auth status -h github.com >/dev/null 2>&1; then
-  echo "ERROR: invalid GitHub auth for Helen profile (GH_CONFIG_DIR=$GH_CONFIG_DIR)" >&2
-  exit 1
-fi
-gh auth switch -h github.com -u "$EXPECTED_LOGIN" >/dev/null 2>&1 || true
-actual_login="$(gh api user --jq .login 2>/dev/null || true)"
-if [[ "$actual_login" != "$EXPECTED_LOGIN" ]]; then
-  echo "ERROR: authenticated as '$actual_login', expected '$EXPECTED_LOGIN' (GH_CONFIG_DIR=$GH_CONFIG_DIR)" >&2
-  exit 1
-fi
+ensure_role_auth
 
 cleanup_local_temp_branches() {
   local pr_branch="$1"
@@ -158,12 +214,22 @@ while IFS= read -r row; do
   needs_test=1
 
   pid_file="$RUN_DIR/issue-${num}.pid"
+  marker_file="$STATE_DIR/issue-${num}.test-started"
   if [[ -f "$pid_file" ]]; then
     pid="$(cat "$pid_file" || true)"
     if [[ -n "${pid}" ]] && kill -0 "$pid" >/dev/null 2>&1; then
       continue
     fi
     rm -f "$pid_file"
+  fi
+
+  now_epoch="$(date +%s)"
+  cooldown_ref=0
+  if [[ -f "$marker_file" ]]; then
+    cooldown_ref="$(stat -f %m "$marker_file" 2>/dev/null || echo 0)"
+  fi
+  if (( cooldown_ref > 0 && now_epoch - cooldown_ref < RETRY_COOLDOWN_SECONDS )); then
+    continue
   fi
 
   started_existing=$(gh issue view "$num" --repo "$REPO" --comments --json comments --jq '[.comments[] | select((.author.login=="TesterHelen") and ((.body // "") | contains("[helen-test-started:v1]")))] | length')
@@ -199,11 +265,13 @@ Requirements:
 EOF
 )
 
+  date -u +"%Y-%m-%dT%H:%M:%SZ" > "$marker_file"
   echo "$$" > "$pid_file"
+  codex_rc=0
   # Run foreground for reliability: background nohup launches can crash under launchd.
-  if ! codex exec --dangerously-bypass-approvals-and-sandbox -m gpt-5.3-codex -C "$HELEN_REPO" "$prompt" >"$log_file" 2>&1; then
-    echo "warning: Helen QA Codex run exited non-zero for issue #$num (log: $log_file)" >&2
-  fi
+  run_with_timeout "$CODEX_TIMEOUT_SECONDS" \
+    codex exec --dangerously-bypass-approvals-and-sandbox -m gpt-5.3-codex -C "$HELEN_REPO" "$prompt" \
+    >"$log_file" 2>&1 || codex_rc=$?
   rm -f "$pid_file"
 
   # Fallback path: if Codex did not submit a review, run deterministic QA checks and submit.
@@ -237,6 +305,24 @@ EOF
         "- Open bugs: smoke validation failed; see log \`$smoke_log\`." \
         | gh issue comment "$num" --repo "$REPO" --body-file - >/dev/null || true
     fi
+  fi
+
+  post_helen_reviews=$(gh pr view "$pr_number" --repo "$REPO" --json reviews --jq '[.reviews[] | select(.author.login=="TesterHelen")] | length')
+  if [[ "$post_helen_reviews" == "0" ]]; then
+    if [[ "$codex_rc" -eq 124 ]]; then
+      fail_reason="timed out after ${CODEX_TIMEOUT_SECONDS}s and fallback did not submit review"
+    elif [[ "$codex_rc" -ne 0 ]]; then
+      fail_reason="exited with code ${codex_rc} and fallback did not submit review"
+    else
+      fail_reason="completed without submitting a review"
+    fi
+    gh issue comment "$num" --repo "$REPO" --body "$FAIL_MARKER QA attempt did not submit a PR review.
+
+- PR: $pr_url
+- Result: $fail_reason
+- Log: \`$log_file\`
+- Next: retry after cooldown (\`${RETRY_COOLDOWN_SECONDS}s\`)." >/dev/null || true
+    echo "warning: issue #$num QA attempt failed ($fail_reason, log: $log_file)" >&2
   fi
 
   if finalize_if_ready "$num" "$pr_number" "$pr_branch"; then
